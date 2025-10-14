@@ -1,0 +1,1765 @@
+---
+format: 
+  pdf:
+    documentclass: article
+    classoption: ["a4paper", "12pt", "fleqn"]
+    geometry: top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm
+    number-sections: true
+    number-depth: 8
+    toc: false  # Désactiver le sommaire automatique
+header-includes: |
+  \usepackage{hyperref}  % Liens cliquables
+  \hypersetup{hidelinks}  % Désactive complètement la mise en couleur des liens
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+\begin{titlepage}
+    \begin{center}
+        {\LARGE \textbf{Modélisation avec des variables latentes}}\\
+        \vspace{0.5cm}
+        {\Large M1 ECAP -- Année 2024/2025}\\
+        
+        \vspace{8cm}
+        
+        {\Large \textbf{Modélisation dans le cadre de la performance thermique}}\\
+        \vspace{0.5cm}
+        
+        \vspace{9cm}
+        
+        {\large \textbf{CROCHET Florian, QUINTIN DE KERCADIO Pierre}}
+        
+        \vfill
+        
+        {\large \today}
+        
+    \end{center}
+\end{titlepage}
+\begingroup
+\hypersetup{linkcolor=black}
+\tableofcontents
+\endgroup
+
+\newpage
+
+# I. Introduction
+
+##  Chargement des librairies
+
+```{r}
+library(tidyverse)
+library(gridExtra)
+library(caret)
+library(car)
+library(pls)
+source("src/VIP.R")
+```
+
+
+## Lecture des données
+
+```{r}
+upenn <- read_tsv("data/UPENN.txt")
+gt <- read_tsv("data/GT.txt")
+```
+
+
+## Création de la variable cible : charge énergétique totale
+
+```{r}
+upenn <- upenn |> 
+  mutate(EnergyLoad = HeatTotal + CoolTotal)
+
+gt <- gt |> 
+   mutate(EnergyLoad = HeatTotal + CoolTotal)
+```
+
+
+## Suppression de colonnes inutiles (ID, HeatTotal, CoolTotal)
+
+```{r}
+colonnes_supprimees <- c("ID", "HeatTotal", "CoolTotal", "HeatJan", "CoolJuly")
+
+Upenn_x <- upenn |> 
+  dplyr::select(-any_of(colonnes_supprimees))
+
+Gt_x <- gt |> 
+  dplyr::select(-any_of(colonnes_supprimees))
+```
+
+
+## Vérification structure
+
+```{r}
+str(Upenn_x)
+summary(Upenn_x$EnergyLoad)
+```
+
+
+## Histogramme de la variable cible
+
+```{r}
+# UPENN
+
+graph_upenn <- Upenn_x |> 
+  ggplot() +
+  aes(x = EnergyLoad) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution de la charge énergétique - UPENN",
+    x = "Charge énergétique",
+    y = "Fréquence"
+  ) +
+  theme_bw()
+
+
+# GT
+
+graph_gt <- Gt_x |> 
+  ggplot() +
+  aes(x = EnergyLoad) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution de la charge énergétique - GT",
+    x = "Charge énergétique",
+    y = "Fréquence"
+  ) +
+  theme_bw()
+
+grid.arrange(graph_upenn, graph_gt, ncol = 2)
+```
+
+
+
+
+
+# II. Exploration des données 
+
+```{r}
+# UPENN
+
+Upenn_x2 <- Upenn_x |> 
+  mutate(sqrt_EnergyLoad = sqrt(EnergyLoad)) |> 
+  dplyr::select(-EnergyLoad)
+
+
+# GT
+
+Gt_x2 <- Gt_x |> 
+  mutate(sqrt_EnergyLoad = sqrt(EnergyLoad)) |> 
+  dplyr::select(-EnergyLoad)
+```
+
+Upenn_x et Gt_x ont pour variable Y EnergyLoad 
+Upenn_x2 et Gt_x2  ont pour variable Y sqrt_EnergyLoad 
+
+
+
+
+## Visualisation de la distribution des valeurs de Y (originale et transformée)
+
+```{r}
+# Y originale
+
+graph_upenn
+
+
+# Y transformée en racine carrée
+
+graph_sqrt_upenn <- Upenn_x2 |> 
+  ggplot() +
+  aes(x = sqrt_EnergyLoad) +
+  geom_histogram(bins = 30, fill = "darkgreen", color = "white") +
+  labs(
+    title = "Distribution de la charge énergétique après transformation en racine carrée - UPENN",
+    x = "Racine carrée de la charge énergétique",
+    y = "Fréquence"
+  ) +
+  theme_bw()
+
+
+grid.arrange(graph_upenn, graph_sqrt_upenn, ncol = 2)
+```
+
+```{r}
+shapiro.test(Upenn_x$EnergyLoad)
+shapiro.test(Upenn_x2$sqrt_EnergyLoad)
+```
+
+
+
+
+## Préparation des matrices pour modélisation
+
+```{r}
+# Y : EnergyLoad
+Train <- Upenn_x
+Test <- Gt_x
+```
+
+```{r}
+# Y : sqrt_EnergyLoad
+Train2 <- Upenn_x2
+Test2 <- Gt_x2
+```
+
+
+
+
+## Structure des jeux
+
+```{r}
+str(Train2)
+str(Test2)
+```
+
+
+
+
+## Distributions
+
+### 1. Y : EnergyLoad
+
+```{r}
+# distribution des valeurs observées pour les differentes variables
+ggp <- list()
+for (i in 1:ncol(Train)) {
+  ggp[[i]] <- Train |> 
+    ggplot() +
+    aes(x = .data[[names(Train)[i]]]) +
+    geom_histogram()
+}
+grid.arrange(grobs = ggp, ncol = 5, nrow = 6)
+```
+
+Variables qui correspondent aux prédicteurs.
+Détection de valeurs atypiques.
+
+
+
+### 2. Y : sqrt_EnergyLoad
+
+```{r}
+# distribution des valeurs observées pour les differentes variables
+ggp2 <- list()
+for (i in 1:ncol(Train2)) {
+  ggp2[[i]] <- Train2 |> 
+    ggplot() +
+    aes(x = .data[[names(Train2)[i]]]) +
+    geom_histogram()
+}
+grid.arrange(grobs = ggp2, ncol = 5, nrow = 6)
+```
+
+Variables qui correspondent aux prédicteurs.
+Détection de valeurs atypiques.
+
+
+
+
+## Corrélations
+
+### 1. Y : EnergyLoad
+
+```{r}
+# matrice des correlations
+corrplot::corrplot(
+  cor(Train),
+  method = "color", 
+  type = "upper", 
+  order = "FPC"
+)
+```
+
+Structure de corrélations fortes pour plusieurs variables.
+D'où l'intérêt d'utiliser des variables latentes avant d'utiliser la régression multiple.
+
+
+
+### 2. Y : sqrt_EnergyLoad
+
+```{r}
+# matrice des correlations
+corrplot::corrplot(
+  cor(Train2),
+  method = "color", 
+  type = "upper", 
+  order = "FPC"
+)
+```
+
+Structure de corrélations fortes pour plusieurs variables.
+D'où l'intérêt d'utiliser des variables latentes avant d'utiliser la régression multiple.
+
+
+
+
+
+# III. Modèle de régression linéaire multiple
+
+## 1. Y : EnergyLoad
+
+### 1. Modèle
+
+```{r}
+# Modèle lm sur l'ensemble données d'entraînement
+
+set.seed(123)
+
+lmtrain <- lm(
+  EnergyLoad ~ ., 
+  data = Train,
+)
+
+summary_lmtrain <- summary(lmtrain)
+summary_lmtrain
+```
+
+```{r}
+# Modèle lm avec validation croisée
+
+set.seed(123)
+
+# Contrôle de la validation croisée
+train_control <- trainControl(method = "cv", number = 10)
+
+# Modèle avec validation croisée
+lmtrain_cv <- train(
+  EnergyLoad ~ ., 
+  data = Train, 
+  method = "lm", 
+  trControl = train_control
+)
+
+lmtrain_cv
+
+resultats <- lmtrain_cv$results
+```
+
+
+#### 1. Distribution des erreurs
+
+```{r}
+# Résidus
+
+residus_lmtrain <- tibble(
+  observations = as.numeric(names(residuals(lmtrain))),
+  residus_lmtrain = (residuals(lmtrain))
+)
+
+
+# Graphique
+
+graph_residus_lmtrain <- residus_lmtrain |> 
+  ggplot() +
+  aes(x = observations, y = residus_lmtrain) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Graphique des résidus avec Y non transformée",
+    x = "Observations", 
+    y = "Résidus"
+  ) + 
+  theme_bw()
+```
+
+
+#### 2. VIF
+
+```{r}
+# Calcul du vif avec la library car
+
+vif_lmtrain <- tibble(
+  variables = names(vif(lmtrain)),
+  vif_lmtrain = vif(lmtrain)
+)
+
+
+# Graphique
+
+graph_vif_lmtrain <- vif_lmtrain |> 
+  ggplot() +
+  aes(x = reorder(variables, vif_lmtrain), y = vif_lmtrain) + 
+  geom_bar(stat = "identity", fill = "skyblue") + 
+  geom_hline(yintercept = 5, color = "red", linetype = "dashed") + 
+  coord_flip() + 
+  labs(
+    title = "VIF de lmtrain",
+    x = "Variable",
+    y = "VIF"
+  ) + 
+  theme_bw()
+```
+
+
+#### 3. R2
+
+```{r}
+# R2
+r2_lm_train <- summary_lmtrain$r.squared
+
+r2_lm_cv <- resultats$Rsquared
+```
+
+
+#### 4. RMSE
+
+```{r}
+# RMSE du modèle lm sur l'ensemble données d'entraînement
+
+# Prédictions sur les données d'entraînement
+predictions <- predict(lmtrain, type = "response")
+
+# Calcul de l'erreur quadratique (residus)
+residus <- Train$EnergyLoad - predictions
+
+# Calculer le RMSE
+rmse_lm_train <- sqrt(mean(residus^2))
+
+rmse_lm_train
+```
+
+```{r}
+# RMSE du modèle lm avec validation croisée
+rmse_lm_cv <- resultats$RMSE
+```
+
+
+
+### 2. Prédiction sur l'ensemble de données de test
+
+```{r}
+# Prédictions sur le trainset
+predtrainlm <- predict(lmtrain, type = "response")
+#cbind(lmtrain$fitted.values, predtrainlm)
+
+# Prédictions sur le testset
+predtestlm<- predict(lmtrain, newdata = Test, type = "response")
+```
+
+#### 1. R2
+
+```{r}
+# r2 on testset (1 - la somme des erreurs)
+r2_lm_test <- 1 - sum((Test$EnergyLoad - predtestlm)^2) / 
+  sum((Test$EnergyLoad - mean(Test$EnergyLoad))^2)
+
+round(r2_lm_test, 4)
+
+
+# # r2 on trainset (1 - la somme des erreurs)
+# r2_lm_train <- 1 - sum((Train$EnergyLoad - predtrainlm)^2) / 
+#   sum((Train$EnergyLoad - mean(Train$EnergyLoad))^2)
+# 
+# round(r2_lm_train, 4)
+```
+
+
+#### 2. RMSE
+
+```{r}
+# Calcul des erreurs
+rmse_lm_test <- sqrt(mean((Test$EnergyLoad - predtestlm)^2))
+round(rmse_lm_test, 4)
+
+# RMSE de référence (modèle naïf = moyenne de Y_train)
+rmse0_lm_test <- sqrt(mean((Test$EnergyLoad - mean(Train$EnergyLoad))^2))
+
+# On ajoute la baseline à gauche du vecteur
+rmse_lm_test <- c(rmse0_lm_test, rmse_lm_test)
+round(rmse_lm_test, 4)
+```
+
+On ne calcule pas la performance du modèle sur les données utilisées pour l'apprentissage.
+
+
+
+### 3. Conclusion : Indicateurs de performance R2 et RMSE
+
+```{r}
+cat(
+  "Modèle :" = "LM",
+  "\n Variable expliquée :" = "EnergyLoad",
+  "\nNombre de composantes :", NA,
+  "\nR2 estimé sur les données d’apprentissage :", r2_lm_train,
+  "\nR2 estimé par validation croisée :", r2_lm_cv,
+  "\nR2 estimé sur les données de test :", r2_lm_test,
+  "\nRMSE estimé sur les données d’apprentissage :", rmse_lm_train,
+  "\nRMSE estimé par validation croisée :", rmse_lm_cv,
+  "\nRMSE estimé sur les données de test :", rmse_lm_test[2]
+)
+```
+
+```{r}
+resultats_lm1 <- tibble(
+  "Modèle" = "LM",
+  "Variable expliquée" = "EnergyLoad",
+  "Nombre de composantes" = NA,
+  "R2 - Apprentissage" = r2_lm_train,
+  "R2 - Validation croisée" = r2_lm_cv,
+  "R2 - Test" = r2_lm_test,
+  "RMSE - Apprentissage" = rmse_lm_train,
+  "RMSE - Validation croisée" = rmse_lm_cv,
+  "RMSE - Test" = rmse_lm_test[2],
+)
+
+View(resultats_lm1)
+```
+
+
+
+
+## 2. Y : sqrt_EnergyLoad
+
+### 1. Modèle
+
+```{r}
+# Modèle lm sur l'ensemble données d'entraînement
+
+set.seed(123)
+
+lmtrain2 <- lm(
+  sqrt_EnergyLoad ~ ., 
+  data = Train2,
+)
+
+summary_lmtrain2 <- summary(lmtrain2)
+summary_lmtrain2
+```
+
+```{r}
+# Modèle lm avec validation croisée
+
+set.seed(123)
+
+# Contrôle de la validation croisée
+train_control2 <- trainControl(method = "cv", number = 10)
+
+# Modèle avec validation croisée
+lmtrain_cv2 <- train(
+  sqrt_EnergyLoad ~ ., 
+  data = Train2, 
+  method = "lm", 
+  trControl = train_control2
+)
+
+lmtrain_cv2
+
+resultats2 <- lmtrain_cv2$results
+```
+
+
+#### 1. Distribution des erreurs
+
+```{r}
+# Résidus
+
+residus_lmtrain2 <- tibble(
+  observations2 = as.numeric(names(residuals(lmtrain2))),
+  residus_lmtrain2 = (residuals(lmtrain2))
+)
+
+
+# Graphique
+
+graph_residus_lmtrain2 <- residus_lmtrain2 |> 
+  ggplot() +
+  aes(x = observations2, y = residus_lmtrain2) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Graphique des résidus avec Y transformée",
+    x = "Observations", 
+    y = "Résidus"
+  ) + 
+  theme_bw()
+```
+
+
+#### 2. VIF
+
+```{r}
+# Calcul du vif
+
+vif_lmtrain2 <- tibble(
+  variables2 = names(vif(lmtrain2)),
+  vif_lmtrain2 = vif(lmtrain2)
+)
+
+
+# Graphique
+
+graph_vif_lmtrain2 <- vif_lmtrain2 |> 
+  ggplot() +
+  aes(x = reorder(variables2, vif_lmtrain2), y = vif_lmtrain2) + 
+  geom_bar(stat = "identity", fill = "skyblue") + 
+  geom_hline(yintercept = 5, color = "red", linetype = "dashed") + 
+  coord_flip() + 
+  labs(
+    title = "VIF de lmtrain2",
+    x = "Variable",
+    y = "VIF"
+  ) + 
+  theme_bw()
+```
+
+
+#### 3. R2
+
+```{r}
+# R2
+r2_lm_train2 <- summary_lmtrain2$r.squared
+
+r2_lm_cv2 <- resultats2$Rsquared
+```
+
+
+#### 4. RMSE
+
+```{r}
+# RMSE du modèle lm sur l'ensemble données d'entraînement
+
+# Prédictions sur les données d'entraînement
+predictions2 <- predict(lmtrain2, type = "response")
+
+# Calcul de l'erreur quadratique (residus)
+residus2 <- Train2$sqrt_EnergyLoad - predictions2
+
+# Calculer le RMSE
+rmse_lm_train2 <- sqrt(mean(residus2^2))
+
+rmse_lm_train2
+```
+
+```{r}
+# RMSE du modèle lm avec validation croisée
+rmse_lm_cv2 <- resultats2$RMSE
+```
+
+
+
+### 2. Prédiction sur l'ensemble de données de test
+
+```{r}
+# Prédictions sur le trainset
+predtrainlm2 <- predict(lmtrain2, type = "response")
+#cbind(lmtrain2$fitted.values, predtrainlm)
+
+# Prédictions sur le testset
+predtestlm2 <- predict(lmtrain2, newdata = Test2, type = "response")
+```
+
+
+#### 1. R2
+
+```{r}
+# r2 on testset (1 - la somme des erreurs)
+r2_lm_test2 <- 1 - sum((Test2$sqrt_EnergyLoad - predtestlm2)^2) / 
+  sum((Test2$sqrt_EnergyLoad - mean(Test2$sqrt_EnergyLoad))^2)
+
+round(r2_lm_test2, 4)
+
+
+# # r2 on trainset (1 - la somme des erreurs)
+# r2_lm_train2 <- 1 - sum((Train2$sqrt_EnergyLoad - predtrainlm2)^2) / 
+#   sum((Train2$sqrt_EnergyLoad - mean(Train2$sqrt_EnergyLoad))^2)
+# 
+# round(r2_lm_train2, 4)
+```
+
+
+#### 2. RMSE
+
+```{r}
+# Calcul des erreurs
+rmse_lm_test2 <- sqrt(mean((Test2$sqrt_EnergyLoad - predtestlm2)^2))
+round(rmse_lm_test2, 4)
+
+# RMSE de référence (modèle naïf = moyenne de Y_train)
+rmse0_lm_test2 <- sqrt(mean((Test2$sqrt_EnergyLoad - mean(Train2$sqrt_EnergyLoad))^2))
+
+# On ajoute la baseline à gauche du vecteur
+rmse_lm_test2 <- c(rmse0_lm_test2, rmse_lm_test2)
+round(rmse_lm_test2, 4)
+```
+
+On ne calcule pas la performance du modèle sur les données utilisées pour l'apprentissage.
+
+
+
+### 3. Conclusion : Indicateurs de performance R2 et RMSE
+
+```{r}
+cat(
+  "Modèle :" = "LM",
+  "\n Variable expliquée :" = "sqrt_EnergyLoad",
+  "\nNombre de composantes :", NA,
+  "\nR2 estimé sur les données d’apprentissage :", r2_lm_train2,
+  "\nR2 estimé par validation croisée :", r2_lm_cv2,
+  "\nR2 estimé sur les données de test :", r2_lm_test2,
+  "\nRMSE estimé sur les données d’apprentissage :", rmse_lm_train2,
+  "\nRMSE estimé par validation croisée :", rmse_lm_cv2,
+  "\nRMSE estimé sur les données de test :", rmse_lm_test2[2]
+)
+```
+
+```{r}
+resultats_lm2 <- tibble(
+  "Modèle" = "LM",
+  "Variable expliquée" = "sqrt_EnergyLoad",
+  "Nombre de composantes" = NA,
+  "R2 - Apprentissage" = r2_lm_train2,
+  "R2 - Validation croisée" = r2_lm_cv2,
+  "R2 - Test" = r2_lm_test2,
+  "RMSE - Apprentissage" = rmse_lm_train2,
+  "RMSE - Validation croisée" = rmse_lm_cv2,
+  "RMSE - Test" = rmse_lm_test2[2],
+)
+
+View(resultats_lm2)
+```
+
+
+
+
+## 3. Conclusion
+
+### 1. Distribution des erreurs
+
+```{r}
+# Résidus du premier modèle (Y : EnergyLoad) et du second (Y : sqrt_EnergyLoad)
+
+residus <- inner_join(
+  residus_lmtrain, 
+  residus_lmtrain2, 
+  by = c("observations" = "observations2")
+)
+residus
+
+
+# Graphiques des deux modèles
+
+graph_residus <- grid.arrange(graph_residus_lmtrain, graph_residus_lmtrain2, ncol = 2)
+graph_residus
+```
+
+
+
+### 2. VIF
+
+```{r}
+# VID du premier modèle (Y : EnergyLoad) et du second (Y : sqrt_EnergyLoad)
+
+vif <- inner_join(
+  vif_lmtrain, 
+  vif_lmtrain2, 
+  by = c("variables" = "variables2")
+)
+vif
+
+
+# Graphiques des deux modèles
+
+graph_vif <- grid.arrange(graph_vif_lmtrain, graph_vif_lmtrain2, ncol = 2)
+graph_vif
+```
+
+
+
+### 3. Indicateurs de performance
+
+```{r}
+resultats_lm <- bind_rows(resultats_lm1, resultats_lm2)
+resultats_lm
+```
+
+
+
+
+
+# IV. Modèle de régression sur composantes principales (PCR)
+
+PCR. Application de la PCR, choix du nombre de composantes et calcul de la performancedu modèle sur le jeu d’apprentissage (APP et CV) et le jeu test. 
+
+## 1. Y : EnergyLoad
+
+### 1. Modèle
+
+```{r}
+# nb d'individus
+n <- nrow(Train)
+
+# nb de variables
+p <- ncol(Train) - 1
+```
+
+```{r}
+set.seed(123)
+## PCR
+pcrtrain <- pcr(
+  EnergyLoad ~ ., 
+  data = Train, 
+  ncomp = min(n - 1, p), # Nombre de variables latentes (composantes)
+  validation = "CV",  # Cross-validation CV : découpage en segment
+  scale = TRUE # prédicteurs centrés et réduits par défaut
+)
+# On prend juste l'apprentissage
+```
+
+```{r}
+summary(pcrtrain)
+```
+
+
+
+### 2. Corrélation
+
+```{r}
+# Score plot des composantes 1 et 2 du modèle
+
+scoreplot(
+  pcrtrain,
+  comp = 1:2, 
+  pch = 19, 
+  main = "Projection des individus sur les composantes PLS 1 et 2"
+)
+
+abline(h = 0, v = 0, col = "grey")
+```
+
+```{r}
+# Corrélations entre variables explicatives + Y et composantes 1 et 2
+
+pls::corrplot(
+  pcrtrain, 
+  comp = 1:2, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 1 et 2)"
+)
+
+
+# Corrélations entre variables explicatives + Y et composantes 3 et 4
+
+pls::corrplot(
+  pcrtrain, 
+  comp = 3:4, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 3 et 4)"
+)
+```
+
+
+
+### 3. R2
+
+```{r}
+r2_pcr_train_cv <- pls::R2(pcrtrain, estimate = "all")
+
+validationplot(pcrtrain, val.type = "R2", type = "b", estimate = "all")
+legend(
+  "bottomright", 
+  legend = c("Train", "CV"),
+  col = c("black", "red"),
+  pch = c(1, 2),
+  lty = c(1, 2)
+)
+```
+
+R2 : variance expliquée par le modèle sur l'ensemble des données.
+En utilisant toutes les composantes des modèles PCR ou PLS, on obtient le R2 du modèle linéaire (LM).
+
+
+
+### 4. RMSE
+
+```{r}
+# RMSE : erreur, utile pour choisir le nb de composantes
+rmse_pcr_train_cv <- pls::RMSEP(pcrtrain, estimate = "all")
+
+validationplot(
+  pcrtrain, 
+  type = "b", 
+  estimate = "all"
+)
+legend(
+  "topright", 
+  legend = c("train", "CV", "adjCV"),
+  col = c("black", "red", "green"),
+  pch = c(1, 2, 3),
+  lty = c(1, 2, 3)
+)
+```
+
+
+
+### 5. Choix du nombre de composantes
+
+```{r}
+ncp_pcr <- selectNcomp(pcrtrain, method = "onesigma")
+ncp_pcr
+```
+
+
+
+### 6. Prédiction sur l'ensemble de données de test
+
+```{r}
+# Prédictions sur le trainset
+predtrainpcr <- predict(pcrtrain,type = "response")
+#cbind(pcrtrain$fitted.values, predtrainpcr)
+
+# Prédictions sur le testset
+predtestpcr <- predict(pcrtrain, newdata = Test, type = "response")
+```
+
+
+#### 1. R2
+
+```{r}
+# r2 on testset (1 - la somme des erreurs)
+r2_pcr_test <- 1 - apply(
+  (Test$EnergyLoad - predtestpcr[, 1, ])^2,
+  2,
+  sum
+) / sum((Test$EnergyLoad - mean(Test$EnergyLoad))^2)
+
+round(r2_pcr_test, 4)
+
+# # r2 on trainset (1 - la somme des erreurs)
+# r2_pcr_train <- 1 - apply(
+#   (Train$EnergyLoad - predtrainpcr[, 1, ])^2,
+#   2,
+#   sum
+# ) / sum((Train$EnergyLoad - mean(Train$EnergyLoad))^2)
+# round(r2_pcr_train, 4)
+```
+
+
+#### 2. RMSE
+
+```{r}
+# Calcul des erreurs en fonction du nombre de composantes
+rmse_pcr_test <- sqrt(apply(
+  (Test$EnergyLoad - predtestpcr[, 1, ])^2,
+  2,
+  mean
+))
+
+# RMSE de référence (modèle naïf = moyenne de Y_train)
+rmse0_pcr_test <- sqrt(mean((Test$EnergyLoad - mean(Train$EnergyLoad))^2))
+
+# On ajoute la baseline à gauche du vecteur
+rmse_pcr_test <- c(rmse0_pcr_test, rmse_pcr_test)
+round(rmse_pcr_test, 4)
+```
+
+On ne calcule pas la performance du modèle sur les données utilisées pour l'apprentissage.
+
+
+
+### 7. Conclusion : Indicateurs de performance R2 et RMSE
+
+```{r}
+cat(
+  "Modèle :" = "PCR",
+  "\n Variable expliquée :" = "EnergyLoad",
+  "\nNombre de composantes :", ncp_pcr,
+  "\nR2 estimé sur les données d’apprentissage :", r2_pcr_train_cv$val["train", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "\nR2 estimé par validation croisée :", r2_pcr_train_cv$val["CV", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "\nR2 estimé sur les données de test :", r2_pcr_test[[paste(ncp_pcr, "comps")]],
+  "\nRMSE estimé sur les données d’apprentissage :", rmse_pcr_train_cv$val["train", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "\nRMSE estimé par validation croisée :", rmse_pcr_train_cv$val["CV", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "\nRMSE estimé sur les données de test :", rmse_pcr_test[[paste(ncp_pcr, "comps")]]
+)
+```
+
+```{r}
+resultats_pcr1 <- tibble(
+  "Modèle" = "PCR",
+  "Variable expliquée" = "EnergyLoad",
+  "Nombre de composantes" = ncp_pcr,
+  "R2 - Apprentissage" = r2_pcr_train_cv$val["train", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "R2 - Validation croisée" = r2_pcr_train_cv$val["CV", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "R2 - Test" = r2_pcr_test[[paste(ncp_pcr, "comps")]],
+  "RMSE - Apprentissage" = rmse_pcr_train_cv$val["train", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "RMSE - Validation croisée" = rmse_pcr_train_cv$val["CV", "EnergyLoad", paste(ncp_pcr, "comps")],
+  "RMSE - Test" = rmse_pcr_test[[paste(ncp_pcr, "comps")]],
+)
+
+View(resultats_pcr1)
+```
+
+
+
+
+## 2. Y : sqrt_EnergyLoad
+
+### 1. Modèle
+
+```{r}
+# nb d'individus
+n2 <- nrow(Train2)
+
+# nb de variables
+p2 <- ncol(Train2) - 1
+```
+
+```{r}
+set.seed(123)
+## PCR
+pcrtrain2 <- pcr(
+  sqrt_EnergyLoad ~ ., 
+  data = Train2, 
+  ncomp = min(n2 - 1, p2), # Nombre de variables latentes (composantes)
+  validation = "CV", # Cross-validation CV : découpage en segment
+  scale = TRUE # prédicteurs centrés et réduits par défaut
+)
+# On prend juste l'apprentissage
+```
+
+```{r}
+summary(pcrtrain2)
+```
+
+
+
+### 2. Corrélation
+
+```{r}
+# Score plot des composantes 1 et 2 du modèle
+
+scoreplot(
+  pcrtrain2,
+  comp = 1:2, 
+  pch = 19, 
+  main = "Projection des individus sur les composantes PLS 1 et 2"
+)
+
+abline(h = 0, v = 0, col = "grey")
+```
+
+```{r}
+# Corrélations entre variables explicatives + Y et composantes 1 et 2
+
+pls::corrplot(
+  pcrtrain2, 
+  comp = 1:2, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 1 et 2)"
+)
+
+
+# Corrélations entre variables explicatives + Y et composantes 3 et 4
+
+pls::corrplot(
+  pcrtrain, 
+  comp = 3:4, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 3 et 4)"
+)
+```
+
+
+
+### 3. R2
+
+```{r}
+r2_pcr_train_cv2 <- pls::R2(pcrtrain2, estimate = "all")
+
+validationplot(
+  pcrtrain2, 
+  val.type = "R2", 
+  type = "b", 
+  estimate = "all"
+)
+legend(
+  "bottomright", 
+  legend = c("Train", "CV"),
+  col = c("black", "red"),
+  pch = c(1, 2),
+  lty = c(1, 2)
+)
+```
+
+R2 : variance expliquée par le modèle sur l'ensemble des données.
+En utilisant toutes les composantes des modèles PCR ou PLS, on obtient le R2 du modèle linéaire (LM).
+
+
+
+### 4. RMSE
+
+```{r}
+# RMSE : erreur, utile pour choisir le nb de composantes
+rmse_pcr_train_cv2 <- pls::RMSEP(pcrtrain2, estimate = "all")
+
+validationplot(
+  pcrtrain2, 
+  type = "b", 
+  estimate = "all"
+)
+legend(
+  "topright", 
+  legend = c("train", "CV", "adjCV"),
+  col = c("black", "red", "green"),
+  pch = c(1, 2, 3),
+  lty = c(1, 2, 3)
+)
+```
+
+
+
+### 5. Choix du nombre de composantes
+
+```{r}
+ncp_pcr2 <- selectNcomp(pcrtrain2, method = "onesigma")
+ncp_pcr2
+```
+
+
+
+### 6. Prédiction sur l'ensemble de données de test
+
+```{r}
+# Prédictions sur le trainset
+predtrainpcr2 <- predict(
+  pcrtrain2, 
+  type = "response"
+)
+#cbind(pcrtrain$fitted.values, predtrainpcr)
+
+# Prédictions sur le testset
+predtestpcr2 <- predict(
+  pcrtrain2, 
+  newdata = Test2, 
+  type = "response"
+)
+```
+
+
+#### 1. R2
+
+```{r}
+# r2 on testset (1 - la somme des erreurs)
+r2_pcr_test2 <- 1 - apply(
+  (Test2$sqrt_EnergyLoad - predtestpcr2[, 1, ])^2,
+  2,
+  sum
+) / sum((Test2$sqrt_EnergyLoad - mean(Test2$sqrt_EnergyLoad))^2)
+
+round(r2_pcr_test2, 4)
+
+# # r2 on trainset (1 - la somme des erreurs)
+# r2_pcr_train2 <- 1 - apply(
+#   (Train2$sqrt_EnergyLoad - predtrainpcr2[, 1, ])^2,
+#   2,
+#   sum
+# ) / sum((Train2$sqrt_EnergyLoad - mean(Train2$sqrt_EnergyLoad))^2)
+# 
+# round(r2_pcr_train2, 4)
+```
+
+
+#### 2. RMSE
+
+```{r}
+# Calcul des erreurs en fonction du nombre de composantes
+rmse_pcr_test2 <- sqrt(apply(
+  (Test2$sqrt_EnergyLoad - predtestpcr2[, 1, ])^2,
+  2,
+  mean
+))
+
+# RMSE de référence (modèle naïf = moyenne de Y_train)
+rmse0_pcr_test2 <- sqrt(
+  mean((Test2$sqrt_EnergyLoad - mean(Train2$sqrt_EnergyLoad))^2)
+)
+
+# On ajoute la baseline à gauche du vecteur
+rmse_pcr_test2 <- c(rmse0_pcr_test2, rmse_pcr_test2)
+round(rmse_pcr_test2, 4)
+```
+
+On ne calcule pas la performance du modèle sur les données utilisées pour l'apprentissage.
+
+
+
+### 7. Conclusion : Indicateurs de performance R2 et RMSE
+
+```{r}
+cat(
+  "Modèle :" = "PCR",
+  "\n Variable expliquée :" = "sqrt_EnergyLoad",
+  "\nNombre de composantes :", ncp_pcr2,
+  "\nR2 estimé sur les données d’apprentissage :", r2_pcr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "\nR2 estimé par validation croisée :", r2_pcr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "\nR2 estimé sur les données de test :", r2_pcr_test2[[paste(ncp_pcr2, "comps")]],
+  "\nRMSE estimé sur les données d’apprentissage :", rmse_pcr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "\nRMSE estimé par validation croisée :", rmse_pcr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "\nRMSE estimé sur les données de test :", rmse_pcr_test2[[paste(ncp_pcr2, "comps")]]
+)
+```
+
+```{r}
+resultats_pcr2 <- tibble(
+  "Modèle" = "PCR",
+  "Variable expliquée" = "sqrt_EnergyLoad",
+  "Nombre de composantes" = ncp_pcr2,
+  "R2 - Apprentissage" = r2_pcr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "R2 - Validation croisée" = r2_pcr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "R2 - Test" = r2_pcr_test2[[paste(ncp_pcr2, "comps")]],
+  "RMSE - Apprentissage" = rmse_pcr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "RMSE - Validation croisée" = rmse_pcr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_pcr2, "comps")],
+  "RMSE - Test" = rmse_pcr_test2[[paste(ncp_pcr2, "comps")]],
+)
+
+View(resultats_pcr2)
+```
+
+
+
+
+## 3. Conclusion
+
+```{r}
+resultats_pcr <- bind_rows(resultats_pcr1, resultats_pcr2)
+View(resultats_pcr)
+```
+
+
+
+
+
+# V. Modèle de régression des moindres carrés partiels (PLS)
+
+PLS. Application de la PLS, choix du nombre de composantes et calcul de la performance du modèle sur le jeu d’apprentissage (APP et CV) et le jeu test. 
+
+## 1. Y : EnergyLoad
+
+### 1. Modèle
+
+```{r}
+# nb d'individus
+n <- nrow(Train)
+
+# nb de variables
+p <- ncol(Train) - 1
+```
+
+```{r}
+set.seed(123)
+## PLSR
+plsrtrain <- plsr(
+  EnergyLoad ~ ., 
+  data = Train, 
+  ncomp = min(n - 1, p), # Nombre de variables latentes (composantes)
+  validation = "CV",  # Cross-validation CV : découpage en segment
+  scale = TRUE, # prédicteurs centrés et réduits par défaut
+  method = "oscorespls" # Pour le VIP
+)
+# On prend juste l'apprentissage
+```
+
+```{r}
+summary(plsrtrain)
+```
+
+
+
+### 2. Corrélation
+
+```{r}
+# Score plot des composantes 1 et 2 du modèle
+
+scoreplot(
+  plsrtrain,
+  comp = 1:2, 
+  pch = 19, 
+  main = "Projection des individus sur les composantes PLS 1 et 2"
+)
+
+abline(h = 0, v = 0, col = "grey")
+```
+
+```{r}
+# Corrélations entre variables explicatives + Y et composantes 1 et 2
+
+pls::corrplot(
+  plsrtrain, 
+  comp = 1:2, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 1 et 2)"
+)
+
+
+# Corrélations entre variables explicatives + Y et composantes 3 et 4
+
+pls::corrplot(
+  plsrtrain, 
+  comp = 3:4, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 3 et 4)"
+)
+```
+
+
+
+### 3. R2
+
+```{r}
+r2_plsr_train_cv <- pls::R2(plsrtrain, estimate = "all")
+
+validationplot(plsrtrain, val.type = "R2", type = "b", estimate = "all")
+legend(
+  "bottomright", 
+  legend = c("Train", "CV"),
+  col = c("black", "red"),
+  pch = c(1, 2),
+  lty = c(1, 2)
+)
+```
+
+R2 : variance expliquée par le modèle sur l'ensemble des données.
+En utilisant toutes les composantes des modèles PCR ou PLS, on obtient le R2 du modèle linéaire (LM).
+
+
+
+### 4. RMSE
+
+```{r}
+# RMSE : erreur, utile pour choisir le nb de composantes
+rmse_plsr_train_cv <- pls::RMSEP(plsrtrain, estimate = "all")
+
+validationplot(
+  plsrtrain, 
+  type = "b", 
+  estimate = "all"
+)
+legend(
+  "topright", 
+  legend = c("train", "CV", "adjCV"),
+  col = c("black", "red", "green"),
+  pch = c(1, 2, 3),
+  lty = c(1, 2, 3)
+)
+```
+
+
+
+### 5. Choix du nombre de composantes
+
+```{r}
+ncp_plsr <- selectNcomp(plsrtrain, method = "onesigma")
+ncp_plsr
+```
+
+
+
+### 6. Prédiction sur l'ensemble de données de test
+
+```{r}
+# Prédictions sur le trainset
+predtrainplsr <- predict(plsrtrain,type = "response")
+#cbind(plsrtrain$fitted.values, predtrainplsr)
+
+# Prédictions sur le testset
+predtestplsr <- predict(plsrtrain, newdata = Test, type = "response")
+```
+
+
+#### 1. R2
+
+```{r}
+# r2 on testset (1 - la somme des erreurs)
+r2_plsr_test <- 1 - apply(
+  (Test$EnergyLoad - predtestplsr[, 1, ])^2,
+  2,
+  sum
+) / sum((Test$EnergyLoad - mean(Test$EnergyLoad))^2)
+
+round(r2_plsr_test, 4)
+
+# # r2 on trainset (1 - la somme des erreurs)
+# r2_plsr_train <- 1 - apply(
+#   (Train$EnergyLoad - predtrainplsr[, 1, ])^2,
+#   2,
+#   sum
+# ) / sum((Train$EnergyLoad - mean(Train$EnergyLoad))^2)
+# round(r2_plsr_train, 4)
+```
+
+
+#### 2. RMSE
+
+```{r}
+# Calcul des erreurs en fonction du nombre de composantes
+rmse_plsr_test <- sqrt(apply(
+  (Test$EnergyLoad - predtestplsr[, 1, ])^2,
+  2,
+  mean
+))
+
+# RMSE de référence (modèle naïf = moyenne de Y_train)
+rmse0_plsr_test <- sqrt(mean((Test$EnergyLoad - mean(Train$EnergyLoad))^2))
+
+# On ajoute la baseline à gauche du vecteur
+rmse_plsr_test <- c(rmse0_plsr_test, rmse_plsr_test)
+round(rmse_plsr_test, 4)
+
+```
+
+On ne calcule pas la performance du modèle sur les données utilisées pour l'apprentissage.
+
+
+
+### 7. Conclusion : Indicateurs de performance R2 et RMSE
+
+```{r}
+cat(
+  "Modèle :" = "PLSR",
+  "\n Variable expliquée :" = "EnergyLoad",
+  "\nNombre de composantes :", ncp_plsr,
+  "\nR2 estimé sur les données d’apprentissage :", r2_plsr_train_cv$val["train", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "\nR2 estimé par validation croisée :", r2_plsr_train_cv$val["CV", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "\nR2 estimé sur les données de test :", r2_plsr_test[[paste(ncp_plsr, "comps")]],
+  "\nRMSE estimé sur les données d’apprentissage :", rmse_plsr_train_cv$val["train", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "\nRMSE estimé par validation croisée :", rmse_plsr_train_cv$val["CV", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "\nRMSE estimé sur les données de test :", rmse_plsr_test[[paste(ncp_plsr, "comps")]]
+)
+```
+
+```{r}
+resultats_plsr1 <- tibble(
+  "Modèle" = "PLSR",
+  "Variable expliquée" = "EnergyLoad",
+  "Nombre de composantes" = ncp_plsr,
+  "R2 - Apprentissage" = r2_plsr_train_cv$val["train", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "R2 - Validation croisée" = r2_plsr_train_cv$val["CV", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "R2 - Test" = r2_plsr_test[[paste(ncp_plsr, "comps")]],
+  "RMSE - Apprentissage" = rmse_plsr_train_cv$val["train", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "RMSE - Validation croisée" = rmse_plsr_train_cv$val["CV", "EnergyLoad", paste(ncp_plsr, "comps")],
+  "RMSE - Test" = rmse_plsr_test[[paste(ncp_plsr, "comps")]],
+)
+
+View(resultats_plsr1)
+```
+
+
+
+
+## 2. Y : sqrt_EnergyLoad
+
+### 1. Modèle
+
+```{r}
+# nb d'individus
+n2 <- nrow(Train2)
+
+# nb de variables
+p2 <- ncol(Train2) - 1
+```
+
+```{r}
+set.seed(123)
+## PLSR
+plsrtrain2 <- plsr(
+  sqrt_EnergyLoad ~ ., 
+  data = Train2, 
+  ncomp = min(n2 - 1, p2), # Nombre de variables latentes (composantes)
+  validation = "CV", # Cross-validation CV : découpage en segment
+  scale = TRUE, # prédicteurs centrés et réduits par défaut
+  method = "oscorespls" # Pour le VIP
+)
+# On prend juste l'apprentissage
+```
+
+```{r}
+summary(plsrtrain2)
+```
+
+
+
+### 2. Corrélation
+
+```{r}
+# Score plot des composantes 1 et 2 du modèle
+
+scoreplot(
+  plsrtrain2, 
+  comp = 1:2, 
+  pch = 19, 
+  main = "Projection des individus sur les composantes PLS 1 et 2"
+)
+
+abline(h = 0, v = 0, col = "grey")
+```
+
+```{r}
+# Corrélations entre variables explicatives + Y et composantes 1 et 2
+
+pls::corrplot(
+  plsrtrain2, 
+  comp = 1:2, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 1 et 2)"
+)
+
+
+# Corrélations entre variables explicatives + Y et composantes 3 et 4
+
+pls::corrplot(
+  plsrtrain2, 
+  comp = 3:4, 
+  plotx = TRUE, 
+  ploty = TRUE, 
+  labels = colnames(Train2),
+  main = "Corrélations (composantes 3 et 4)"
+)
+```
+
+
+
+### 3. R2
+
+```{r}
+r2_plsr_train_cv2 <- pls::R2(plsrtrain2, estimate = "all")
+
+validationplot(
+  plsrtrain2, 
+  val.type = "R2", 
+  type = "b", 
+  estimate = "all"
+)
+legend(
+  "bottomright", 
+  legend = c("Train", "CV"),
+  col = c("black", "red"),
+  pch = c(1, 2),
+  lty = c(1, 2)
+)
+```
+
+R2 : variance expliquée par le modèle sur l'ensemble des données.
+En utilisant toutes les composantes des modèles PCR ou PLS, on obtient le R2 du modèle linéaire (LM).
+
+
+
+### 4. RMSE
+
+```{r}
+# RMSE : erreur, utile pour choisir le nb de composantes
+rmse_plsr_train_cv2 <- pls::RMSEP(plsrtrain2, estimate = "all")
+
+validationplot(
+  plsrtrain2, 
+  type = "b", 
+  estimate = "all"
+)
+legend(
+  "topright", 
+  legend = c("train", "CV", "adjCV"),
+  col = c("black", "red", "green"),
+  pch = c(1, 2, 3),
+  lty = c(1, 2, 3)
+)
+```
+
+
+
+### 5. Choix du nombre de composantes
+
+```{r}
+ncp_plsr2 <- selectNcomp(plsrtrain2, method = "onesigma")
+ncp_plsr2
+```
+
+
+
+### 6. Prédiction sur l'ensemble de données de test
+
+```{r}
+# Prédictions sur le trainset
+predtrainplsr2 <- predict(
+  plsrtrain2, 
+  type = "response"
+)
+#cbind(plsrtrain$fitted.values, predtrainplsr)
+
+# Prédictions sur le testset
+predtestplsr2 <- predict(
+  plsrtrain2, 
+  newdata = Test2, 
+  type = "response"
+)
+```
+
+```{r}
+dim(predtestplsr2)
+```
+
+
+#### 1. R2
+
+```{r}
+# r2 on testset (1 - la somme des erreurs)
+r2_plsr_test2 <- 1 - apply(
+  (Test2$sqrt_EnergyLoad - predtestplsr2[, 1, ])^2,
+  2,
+  sum
+) / sum((Test2$sqrt_EnergyLoad - mean(Test2$sqrt_EnergyLoad))^2)
+
+round(r2_plsr_test2, 4)
+
+# # r2 on trainset (1 - la somme des erreurs)
+# r2_plsr_train2 <- 1 - apply(
+#   (Train2$sqrt_EnergyLoad - predtrainplsr2[, 1, ])^2,
+#   2,
+#   sum
+# ) / sum((Train2$sqrt_EnergyLoad - mean(Train2$sqrt_EnergyLoad))^2)
+# 
+# round(r2_plsr_train2, 4)
+```
+
+
+#### 2. RMSE
+
+```{r}
+# Calcul des erreurs en fonction du nombre de composantes
+rmse_plsr_test2 <- sqrt(apply(
+  (Test2$sqrt_EnergyLoad - predtestplsr2[, 1, ])^2,
+  2,
+  mean
+))
+
+# RMSE de référence (modèle naïf = moyenne de Y_train)
+rmse0_plsr_test2 <- sqrt(
+  mean((Test2$sqrt_EnergyLoad - mean(Train2$sqrt_EnergyLoad))^2)
+)
+
+# On ajoute la baseline à gauche du vecteur
+rmse_plsr_test2 <- c(rmse0_plsr_test2, rmse_plsr_test2)
+round(rmse_plsr_test2, 4)
+```
+
+On ne calcule pas la performance du modèle sur les données utilisées pour l'apprentissage.
+
+
+
+### 7. Conclusion : Indicateurs de performance R2 et RMSE
+
+```{r}
+cat(
+  "Modèle :" = "PLSR",
+  "\n Variable expliquée :" = "sqrt_EnergyLoad",
+  "\nNombre de composantes :", ncp_plsr2,
+  "\nR2 estimé sur les données d’apprentissage :", r2_plsr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "\nR2 estimé par validation croisée :", r2_plsr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "\nR2 estimé sur les données de test :", r2_plsr_test2[[paste(ncp_plsr2, "comps")]],
+  "\nRMSE estimé sur les données d’apprentissage :", rmse_plsr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "\nRMSE estimé par validation croisée :", rmse_plsr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "\nRMSE estimé sur les données de test :", rmse_plsr_test2[[paste(ncp_plsr2, "comps")]]
+)
+```
+
+```{r}
+resultats_plsr2 <- tibble(
+  "Modèle" = "PLSR",
+  "Variable expliquée" = "sqrt_EnergyLoad",
+  "Nombre de composantes" = ncp_plsr2,
+  "R2 - Apprentissage" = r2_plsr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "R2 - Validation croisée" = r2_plsr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "R2 - Test" = r2_plsr_test2[[paste(ncp_plsr2, "comps")]],
+  "RMSE - Apprentissage" = rmse_plsr_train_cv2$val["train", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "RMSE - Validation croisée" = rmse_plsr_train_cv2$val["CV", "sqrt_EnergyLoad", paste(ncp_plsr2, "comps")],
+  "RMSE - Test" = rmse_plsr_test2[[paste(ncp_plsr2, "comps")]],
+)
+
+View(resultats_plsr2)
+```
+
+
+
+
+## 3. Conclusion
+
+```{r}
+resultats_plsr <- bind_rows(resultats_plsr1, resultats_plsr2)
+View(resultats_plsr)
+```
+
+
+
+
+
+# VI. Comparaison des modèles et interprétation
+
+Comparaison des modèles et interprétation. Discussion de l’efficacité de la PLS par rapport à la PCR en présence de variables corrélées. Choix d’un modèle et l’interpréter en identifiant les variables les plus influentes sur la consommation énergétique. 
+
+
+## 1. Résultats
+
+```{r}
+resultats <- bind_rows(resultats_lm, resultats_pcr, resultats_plsr)
+View(resultats)
+```
+
+Les modèles MCO de type LM ne sont pas appropriés en raison de la multicolinéarité entre les variables explicatives, ce qui compromet la validité des résultats.
+
+
+
+
+## 2. VIP 
+
+```{r}
+# Calcul des scores VIP pour le meilleur modèle PLS
+
+vip <- VIP(plsrtrain2)[ncp_plsr2, ]
+
+
+# Préparation des données
+
+df_vip <- tibble(
+  Variable = names(vip),
+  VIP = as.numeric(vip)
+)
+
+
+# Graphique
+
+df_vip |> 
+  ggplot() +
+  aes(
+    x = reorder(Variable, VIP), 
+    y = VIP, 
+    fill = VIP >= 1
+  ) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = c("lightgrey", "skyblue"), guide = "none") +
+  geom_hline(yintercept = 1, color = "red", linewidth = 1) +
+  geom_hline(yintercept = 0.9, color = "red", linetype = "dashed") +
+  labs(
+    title = "Scores VIP des variables explicatives",
+    x = NULL,
+    y = "VIP"
+  ) +
+  theme_bw(base_size = 12)
+```
+
+
+
+
