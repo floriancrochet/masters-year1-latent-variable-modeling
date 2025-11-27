@@ -1,6 +1,8 @@
 # Thermal Performance Modeling Using Latent Variables  
 *A comparative analysis of PCR and PLS regression for building energy modeling.*
 
+[**Report (PDF – online)**](https://drive.google.com/file/d/1ndFlmv22-nO0_3RctE6saDAWQKqEjA6G/view?usp=drive_link)
+
 ---
 
 ## 📘 Overview
